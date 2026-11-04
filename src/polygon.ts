@@ -1,3 +1,4 @@
+import { orient2d } from "robust-predicates"
 import type { Bounds, Point, UniversalRect } from "./common"
 import { doSegmentsIntersect } from "./line-intersections"
 
@@ -152,27 +153,29 @@ const doesSegmentEnterBounds = (
   start: Point,
   end: Point,
   bounds: Bounds,
+  corners: Point[],
 ): boolean => {
-  if (start.x === end.x && start.y === end.y) return false
-
-  let enter = 0
-  let leave = 1
-  for (const [from, to, min, max] of [
-    [start.x, end.x, bounds.minX, bounds.maxX],
-    [start.y, end.y, bounds.minY, bounds.maxY],
-  ]) {
-    const delta = to - from
-    if (delta === 0) {
-      if (from <= min || from >= max) return false
-      continue
-    }
-    const first = (min - from) / delta
-    const second = (max - from) / delta
-    enter = Math.max(enter, Math.min(first, second))
-    leave = Math.min(leave, Math.max(first, second))
-    if (enter >= leave) return false
+  // The rectangle's axes separate segments that cannot enter its open interior.
+  if (
+    Math.max(start.x, end.x) <= bounds.minX ||
+    Math.min(start.x, end.x) >= bounds.maxX ||
+    Math.max(start.y, end.y) <= bounds.minY ||
+    Math.min(start.y, end.y) >= bounds.maxY
+  ) {
+    return false
   }
-  return true
+
+  // The remaining separating axis is perpendicular to the segment. Exact signs
+  // distinguish corner contact from even a thin crossing without rounded t values.
+  let positive = false
+  let negative = false
+  for (const corner of corners) {
+    const side = orient2d(start.x, start.y, end.x, end.y, corner.x, corner.y)
+    positive ||= side > 0
+    negative ||= side < 0
+    if (positive && negative) return true
+  }
+  return false
 }
 
 const isBoundsSegmentInsidePolygon = (
@@ -254,7 +257,7 @@ export const areBoundsCompletelyInsidePolygon = (
   // For a simple polygon, a boundary entering the rectangle's open interior
   // excludes some rectangle area. Contact confined to its boundary is allowed.
   return !getPolygonEdges(polygon).some(([start, end]) =>
-    doesSegmentEnterBounds(start, end, bounds),
+    doesSegmentEnterBounds(start, end, bounds, corners),
   )
 }
 
