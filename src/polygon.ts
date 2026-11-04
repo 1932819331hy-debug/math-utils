@@ -79,6 +79,13 @@ export const isPointInsidePolygon = (
     }
   }
 
+  return isPointInsidePolygonByRayCast(point, polygon)
+}
+
+const isPointInsidePolygonByRayCast = (
+  point: Point,
+  polygon: Polygon,
+): boolean => {
   let inside = false
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
     const xi = polygon[i].x
@@ -141,6 +148,87 @@ export const areBoundsOverlappingPolygon = (
   return doesPolygonIntersectBounds(bounds, polygon)
 }
 
+const doesSegmentEnterBounds = (
+  start: Point,
+  end: Point,
+  bounds: Bounds,
+): boolean => {
+  if (start.x === end.x && start.y === end.y) return false
+
+  let enter = 0
+  let leave = 1
+  for (const [from, to, min, max] of [
+    [start.x, end.x, bounds.minX, bounds.maxX],
+    [start.y, end.y, bounds.minY, bounds.maxY],
+  ]) {
+    const delta = to - from
+    if (delta === 0) {
+      if (from <= min || from >= max) return false
+      continue
+    }
+    const first = (min - from) / delta
+    const second = (max - from) / delta
+    enter = Math.max(enter, Math.min(first, second))
+    leave = Math.min(leave, Math.max(first, second))
+    if (enter >= leave) return false
+  }
+  return true
+}
+
+const isBoundsSegmentInsidePolygon = (
+  bounds: Bounds,
+  polygon: Polygon,
+): boolean => {
+  const horizontal = bounds.minY === bounds.maxY
+  const fixed = horizontal ? bounds.minY : bounds.minX
+  const min = horizontal ? bounds.minX : bounds.minY
+  const max = horizontal ? bounds.maxX : bounds.maxY
+  if (min === max) return true // The corner test already accepted this point.
+
+  // Split at every boundary crossing, including collinear overlap endpoints.
+  // Endpoints alone cannot detect a segment passing through a concave gap.
+  const positions = [min, max]
+  const boundaryIntervals: Array<[number, number]> = []
+  for (const [start, end] of getPolygonEdges(polygon)) {
+    const startFixed = horizontal ? start.y : start.x
+    const endFixed = horizontal ? end.y : end.x
+    const startAlong = horizontal ? start.x : start.y
+    const endAlong = horizontal ? end.x : end.y
+    if (startFixed === endFixed) {
+      if (startFixed === fixed) {
+        positions.push(startAlong, endAlong)
+        boundaryIntervals.push([
+          Math.min(startAlong, endAlong),
+          Math.max(startAlong, endAlong),
+        ])
+      }
+    } else if (
+      fixed >= Math.min(startFixed, endFixed) &&
+      fixed <= Math.max(startFixed, endFixed)
+    ) {
+      positions.push(
+        startAlong +
+          ((fixed - startFixed) / (endFixed - startFixed)) *
+            (endAlong - startAlong),
+      )
+    }
+  }
+  const splits = positions.filter((value) => value >= min && value <= max)
+  splits.sort((a, b) => a - b)
+  for (let i = 1; i < splits.length; i++) {
+    if (splits[i] === splits[i - 1]) continue
+    const along = splits[i - 1] + (splits[i] - splits[i - 1]) / 2
+    if (
+      boundaryIntervals.some(([start, end]) => along >= start && along <= end)
+    ) {
+      continue
+    }
+    const point = horizontal ? { x: along, y: fixed } : { x: fixed, y: along }
+    if (!isPointInsidePolygonByRayCast(point, polygon)) return false
+  }
+  return true
+}
+
 export const areBoundsCompletelyInsidePolygon = (
   bounds: Bounds,
   polygon: Polygon,
@@ -152,7 +240,22 @@ export const areBoundsCompletelyInsidePolygon = (
     return false
   }
 
-  return !doesPolygonIntersectBounds(bounds, polygon)
+  if (bounds.minX === bounds.maxX || bounds.minY === bounds.maxY) {
+    return isBoundsSegmentInsidePolygon(bounds, polygon)
+  }
+
+  // All corners can lie on a concave notch's boundary while the interior is outside.
+  const center = {
+    x: bounds.minX + (bounds.maxX - bounds.minX) / 2,
+    y: bounds.minY + (bounds.maxY - bounds.minY) / 2,
+  }
+  if (!isPointInsidePolygonByRayCast(center, polygon)) return false
+
+  // For a simple polygon, a boundary entering the rectangle's open interior
+  // excludes some rectangle area. Contact confined to its boundary is allowed.
+  return !getPolygonEdges(polygon).some(([start, end]) =>
+    doesSegmentEnterBounds(start, end, bounds),
+  )
 }
 
 export const isRectOverlappingPolygon = (
